@@ -28,7 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pinetime_boot/pinetime_boot.h"
-
+#include "graphic.h"
 //  GPIO Pins. From rust\piet-embedded\piet-embedded-graphics\src\display.rs
 #define DISPLAY_SPI   0  //  Mynewt SPI port 0
 #define DISPLAY_CS   25  //  LCD_CS (P0.25): Chip select
@@ -105,84 +105,56 @@ static int transmit_spi(const uint8_t *data, uint16_t len);
 static void delay_ms(uint32_t ms);
 
 /// Buffer for reading flash and writing to display
-static uint8_t flash_buffer[BATCH_SIZE];
+static uint8_t flash_buffer[240*2];
+
+
+int pinetime_display_image(struct imgInfo* info, int posx, int posy) {
+  int rc;
+  int y = 0;
+  uint16_t bp = 0;
+  uint16_t fg = 0xffff;
+  const uint16_t bg = 0;
+  uint16_t color = bg;
+  for (int i=0; i<info->dataSize; i++) {
+    uint8_t rl = info->data[i];
+    while (rl) {
+      flash_buffer[bp] = color >> 8;
+      flash_buffer[bp + 1] = color & 0xff;
+      bp += 2;
+      rl -= 1;
+
+      if (bp >= (info->width*2)) {
+        rc = set_window(posx, y+posy, posx+info->width-1, y+posy); assert(rc == 0);
+
+        //  Write Pixels (RAMWR): st7735_lcd::draw() → set_pixel()
+        rc = write_command(RAMWR, NULL, 0); assert(rc == 0);
+        rc = write_data(flash_buffer, info->width*2); assert(rc == 0);
+        bp = 0;
+        y += 1;
+      }
+    }
+
+    if (color == bg)
+      color = fg;
+    else
+      color = bg;
+  }
+  return 0;
+}
 
 /// Display the image in SPI Flash to ST7789 display controller. 
 /// Derived from https://github.com/lupyuen/pinetime-rust-mynewt/blob/main/logs/spi-non-blocking.log
 int pinetime_boot_display_image(void) {
-    console_printf("Displaying image...\n"); console_flush();
-    int rc = init_display();  assert(rc == 0);
-    rc = set_orientation(Landscape);  assert(rc == 0);
+  console_printf("Displaying boot logo...\n");  console_flush();
 
-    //  Render each row of pixels.
-    for (uint8_t row = 0; row < ROW_COUNT; row++) {
-        uint8_t top = row;
-        uint8_t bottom = row;
-        uint8_t left = 0;
-        //  Screen Buffer: 240 * 240 * 2 / 1024 = 112.5 KB
-        //  Render a batch of columns in that row.
-        for (;;) {
-            if (left >= COL_COUNT) { break; }
+  int rc = init_display();  assert(rc == 0);
+  rc = set_orientation(Landscape);  assert(rc == 0);
+  return pinetime_display_image(&bootLogoInfo, 0, 0);
+}
 
-            //  How many columns we will render in a batch.
-            uint16_t batch_columns = BATCH_SIZE / BYTES_PER_PIXEL;
-            uint16_t right = left + batch_columns - 1;
-            if (right >= COL_COUNT) { right = COL_COUNT - 1; }
-
-            //  How many bytes we will transmit.
-            uint16_t len = (right - left + 1) * BYTES_PER_PIXEL;
-
-            //  Read the bytes from flash memory.
-            uint32_t offset = ((top * COL_COUNT) + left) * BYTES_PER_PIXEL;
-            int rc = hal_flash_read(FLASH_DEVICE, offset, flash_buffer, len); assert(rc == 0);
-
-            //  console_printf("%lx: ", offset); console_dump(flash_buffer, len); console_printf("\n"); console_flush();
-
-            //  Set the display window.
-            rc = set_window(left, top, right, bottom); assert(rc == 0);
-
-            //  Write Pixels (RAMWR): st7735_lcd::draw() → set_pixel()
-            rc = write_command(RAMWR, NULL, 0); assert(rc == 0);
-            rc = write_data(flash_buffer, len); assert(rc == 0);
-
-            left = right + 1;
-        }
-    }
-
-    /*
-    //  Set Address Window Columns (CASET): st7735_lcd::draw() → set_pixel() → set_address_window()
-    write_command(CASET, NULL, 0);
-    static const uint8_t CASET1_PARA[] = { 0x00, 0x00, 0x00, 0x13 };
-    write_data(CASET1_PARA, sizeof(CASET1_PARA));  //  Col 0 to 19
-
-    //  Set Address Window Rows (RASET): st7735_lcd::draw() → set_pixel() → set_address_window()
-    write_command(RASET, NULL, 0);
-    static const uint8_t RASET1_PARA[] = { 0x00, 0x00, 0x00, 0x00 };
-    write_data(RASET1_PARA, sizeof(RASET1_PARA));  //  Row 0 to 0
-
-    //  Write Pixels (RAMWR): st7735_lcd::draw() → set_pixel()
-    write_command(RAMWR, NULL, 0);
-    static const uint8_t RAMWR1_PARA[] = { 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0 };
-    write_data(RAMWR1_PARA, sizeof(RAMWR1_PARA));  //  40 bytes
-
-    //  Set Address Window Columns (CASET): st7735_lcd::draw() → set_pixel() → set_address_window()
-    write_command(CASET, NULL, 0);
-    static const uint8_t CASET2_PARA[] = { 0x00, 0x14, 0x00, 0x27 };
-    write_data(CASET2_PARA, sizeof(CASET2_PARA));  //  Col 20 to 39
-
-    //  Set Address Window Rows (RASET): st7735_lcd::draw() → set_pixel() → set_address_window()
-    write_command(RASET, NULL, 0);
-    static const uint8_t RASET2_PARA[] = { 0x00, 0x00, 0x00, 0x00 };
-    write_data(RASET2_PARA, sizeof(RASET2_PARA));  //  Row 0 to 0
-
-    //  Write Pixels (RAMWR): st7735_lcd::draw() → set_pixel()
-    write_command(RAMWR, NULL, 0);
-    static const uint8_t RAMWR2_PARA[] = { 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0, 0x87, 0xe0 };
-    write_data(RAMWR2_PARA, sizeof(RAMWR2_PARA));  //  40 bytes
-    */
-
-    console_printf("Image displayed\n"); console_flush();
-    return 0;
+int pinetime_version_image(void) {
+  console_printf("Displaying version image...\n"); console_flush();
+  return pinetime_display_image(&versionInfo, 120 - (versionInfo.width/2), 120 - (versionInfo.height/2));
 }
 
 /// Set the ST7789 display window to the coordinates (left, top), (right, bottom)

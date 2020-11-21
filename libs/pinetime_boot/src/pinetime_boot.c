@@ -56,6 +56,8 @@ void pinetime_boot_init(void) {
 
     //  Display the image.
     pinetime_boot_display_image();
+
+    pinetime_version_image();
     console_printf("Check button: %d\n", hal_gpio_read(PUSH_BUTTON_IN));  console_flush();
     //  blink_backlight(2, 1);
 
