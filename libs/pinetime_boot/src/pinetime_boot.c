@@ -27,6 +27,7 @@
 #include "bootutil/image.h"
 #include <bootutil/bootutil.h>
 #include "pinetime_boot/pinetime_boot.h"
+#include "pinetime_boot/pinetime_factory.h"
 
 #define PUSH_BUTTON_IN  13  //  GPIO Pin P0.13: PUSH BUTTON_IN
 #define PUSH_BUTTON_OUT 15  //  GPIO Pin P0.15/TRACEDATA2: PUSH BUTTON_OUT
@@ -74,6 +75,7 @@ void pinetime_boot_init(void) {
     //  Check whether button is pressed and held. Sample count must high enough to avoid accidental rollbacks.
     if (button_samples > 64) {  //  20% of total samples
         console_printf("Flashing and resetting...\n");  console_flush();
+        restore_factory();
 
         //  Mark the previous firmware for rollback and blink slowly 4 times.
         boot_set_pending(0);
