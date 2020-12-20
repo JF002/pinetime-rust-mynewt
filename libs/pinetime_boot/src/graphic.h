@@ -105,7 +105,7 @@ static const uint8_t bootLogoRle[] = {
 
 struct imgInfo bootLogoInfo = {
   240,
-  240,
+  214,
   1086,
   bootLogoRle
 };

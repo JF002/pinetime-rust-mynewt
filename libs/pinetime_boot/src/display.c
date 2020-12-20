@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pinetime_boot/pinetime_boot.h"
+#include "pinetime_boot/pinetime_delay.h"
 #include "graphic.h"
 //  GPIO Pins. From rust\piet-embedded\piet-embedded-graphics\src\display.rs
 #define DISPLAY_SPI   0  //  Mynewt SPI port 0
@@ -102,24 +103,23 @@ static int set_orientation(uint8_t orientation);
 static int write_command(uint8_t command, const uint8_t *params, uint16_t len);
 static int write_data(const uint8_t *data, uint16_t len);
 static int transmit_spi(const uint8_t *data, uint16_t len);
-static void delay_ms(uint32_t ms);
 
 /// Buffer for reading flash and writing to display
 static uint8_t flash_buffer[240*2];
 
-
-int pinetime_display_image(struct imgInfo* info, int posx, int posy) {
+int pinetime_display_image_colors(struct imgInfo* info, int posx, int posy, uint16_t color1, uint16_t color2, uint8_t colorLine) {
   int rc;
   int y = 0;
   uint16_t bp = 0;
   uint16_t fg = 0xffff;
   const uint16_t bg = 0;
   uint16_t color = bg;
+  uint16_t trueColor = color;
   for (int i=0; i<info->dataSize; i++) {
     uint8_t rl = info->data[i];
     while (rl) {
-      flash_buffer[bp] = color >> 8;
-      flash_buffer[bp + 1] = color & 0xff;
+      flash_buffer[bp] = trueColor >> 8;
+      flash_buffer[bp + 1] = trueColor & 0xff;
       bp += 2;
       rl -= 1;
 
@@ -134,12 +134,34 @@ int pinetime_display_image(struct imgInfo* info, int posx, int posy) {
       }
     }
 
-    if (color == bg)
+    if (color == bg) {
       color = fg;
-    else
+      trueColor = (y < colorLine) ? color1 : color2;
+    }
+    else {
       color = bg;
+      trueColor = color;
+    }
+    if(y >= info->height)
+      break;
   }
   return 0;
+}
+
+void pinetime_clear_screen(void) {
+  int rc = 0;
+  for(int i = 0 ; i < 240*2; i++) {
+    flash_buffer[i] = 0;
+  }
+  for(int i = 0; i < 240; i++) {
+    rc = set_window(0, i, 239, i); assert(rc == 0);
+    rc = write_command(RAMWR, NULL, 0); assert(rc == 0);
+    rc = write_data(flash_buffer, 240*2); assert(rc == 0);
+  }
+}
+
+int pinetime_display_image(struct imgInfo* info, int posx, int posy) {
+  return pinetime_display_image_colors(info, posx, posy, 0xffff, 0xffff, 0);
 }
 
 /// Display the image in SPI Flash to ST7789 display controller. 
@@ -149,12 +171,18 @@ int pinetime_boot_display_image(void) {
 
   int rc = init_display();  assert(rc == 0);
   rc = set_orientation(Landscape);  assert(rc == 0);
+  pinetime_clear_screen();
   return pinetime_display_image(&bootLogoInfo, 0, 0);
 }
 
+int pinetime_boot_display_image_colors(uint16_t color1, uint16_t color2, uint8_t colorLine) {
+  return pinetime_display_image_colors(&bootLogoInfo, 0, 0, color1, color2, colorLine);
+}
+
+
 int pinetime_version_image(void) {
   console_printf("Displaying version image...\n"); console_flush();
-  return pinetime_display_image(&versionInfo, 120 - (versionInfo.width/2), 120 - (versionInfo.height/2));
+  return pinetime_display_image(&versionInfo, 120 - (versionInfo.width/2), 240 - (versionInfo.height));
 }
 
 /// Set the ST7789 display window to the coordinates (left, top), (right, bottom)
@@ -186,9 +214,9 @@ static int init_display(void) {
 
     hard_reset();
     write_command(SWRESET, NULL, 0);
-    delay_ms(200);
+    pinetime_delay_ms(200);
     write_command(SLPOUT, NULL, 0);
-    delay_ms(200);
+    pinetime_delay_ms(200);
 
     static const uint8_t FRMCTR1_PARA[] = { 0x01, 0x2C, 0x2D };
     write_command(FRMCTR1, FRMCTR1_PARA, sizeof(FRMCTR1_PARA));
@@ -234,9 +262,9 @@ static int init_display(void) {
     }
     static const uint8_t COLMOD_PARA[] = { 0x05 };
     write_command(COLMOD, COLMOD_PARA, sizeof(COLMOD_PARA));
-    
+
     write_command(DISPON, NULL, 0);
-    delay_ms(200);
+    pinetime_delay_ms(200);
     return 0;
 }
 
@@ -250,16 +278,17 @@ static int hard_reset(void) {
 
 /// Set the display orientation
 static int set_orientation(uint8_t orientation) {
+  int rc = 0;
     if (RGB) {
         uint8_t orientation_para[1] = { orientation };
-        int rc = write_command(MADCTL, orientation_para, 1);
+        rc = write_command(MADCTL, orientation_para, 1);
         assert(rc == 0);
     } else {
         uint8_t orientation_para[1] = { orientation | 0x08 };
-        int rc = write_command(MADCTL, orientation_para, 1);
+        rc = write_command(MADCTL, orientation_para, 1);
         assert(rc == 0);
     }
-    return 0;
+    return rc;
 }
 
 /// Transmit ST7789 command
@@ -267,7 +296,7 @@ static int write_command(uint8_t command, const uint8_t *params, uint16_t len) {
     hal_gpio_write(DISPLAY_DC, 0);
     int rc = transmit_spi(&command, 1);
     assert(rc == 0);
-    if (params != NULL && len > 0) {
+    if (rc == 0 && (params != NULL && len > 0)) {
         rc = write_data(params, len);
         assert(rc == 0);
     }
@@ -297,17 +326,3 @@ static int transmit_spi(const uint8_t *data, uint16_t len) {
     return 0;
 }
 
-/// Sleep for the specified number of milliseconds
-static void delay_ms(uint32_t ms) {
-#if MYNEWT_VAL(OS_SCHEDULING)  //  If Task Scheduler is enabled (i.e. not MCUBoot)...
-    uint32_t delay_ticks = ms * OS_TICKS_PER_SEC / 1000;
-    os_time_delay(delay_ticks);
-#else  //  If Task Scheduler is disabled (i.e. MCUBoot)...
-    //  os_time_delay() doesn't work in MCUBoot because the scheduler has not started
-    uint8_t button_samples = 0;
-    for (int i = 0; i < 64; i++) {
-        for (int delay = 0; delay < 100000; delay++) {}
-        button_samples += hal_gpio_read(PUSH_BUTTON_IN);
-    }
-#endif  //  MYNEWT_VAL(OS_SCHEDULING)
-}

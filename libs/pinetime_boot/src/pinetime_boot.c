@@ -28,6 +28,7 @@
 #include <bootutil/bootutil.h>
 #include "pinetime_boot/pinetime_boot.h"
 #include "pinetime_boot/pinetime_factory.h"
+#include "pinetime_boot/pinetime_delay.h"
 
 #define PUSH_BUTTON_IN  13  //  GPIO Pin P0.13: PUSH BUTTON_IN
 #define PUSH_BUTTON_OUT 15  //  GPIO Pin P0.15/TRACEDATA2: PUSH BUTTON_OUT
@@ -58,24 +59,43 @@ void pinetime_boot_init(void) {
     //  Display the image.
     pinetime_boot_display_image();
 
+    // Display version image
     pinetime_version_image();
-    console_printf("Check button: %d\n", hal_gpio_read(PUSH_BUTTON_IN));  console_flush();
-    //  blink_backlight(2, 1);
 
     //  Wait 5 seconds for button press.
     uint32_t button_samples = 0;
     console_printf("Waiting 5 seconds for button...\n");  console_flush();
     for (int i = 0; i < 64 * 5; i++) {
-        for (int delay = 0; delay < 40000; delay++) {
+        for (int delay = 0; delay < 3000; delay++) {
             button_samples += hal_gpio_read(PUSH_BUTTON_IN);
         }
+        if(i % 64 == 0) {
+          console_printf("step %d - %d\n", (i / (64)) + 1, (int)button_samples); console_flush();
+        }
+
+        if(i % 8 == 0) {
+          uint16_t color = 0xF800;
+          if (button_samples < 3000 * 64 * 2) {
+            color = 0x07E0;
+          } else if (button_samples < 3000 * 64 * 4) {
+            color = 0x001F;
+          } else {
+            color = 0xF800;
+          }
+
+          pinetime_boot_display_image_colors(0xffff, color, 240 - ((i / 8) * 6) + 1);
+        }
     }
-    console_printf("Waited 5 seconds\n");  console_flush();
+    console_printf("Waited 5 seconds (%d)\n", (int)button_samples);  console_flush();
 
     //  Check whether button is pressed and held. Sample count must high enough to avoid accidental rollbacks.
-    if (button_samples > 64) {  //  20% of total samples
-        console_printf("Flashing and resetting...\n");  console_flush();
-        restore_factory();
+    if(button_samples > (3000 * 64 * 4)) {
+      console_printf("Restoring factory firmware\n");  console_flush();
+      restore_factory();
+    }
+
+    if(button_samples > (3000 * 64 * 2)) {
+        console_printf("Flashing secondary firmware into primary\n");  console_flush();
 
         //  Mark the previous firmware for rollback and blink slowly 4 times.
         boot_set_pending(0);
@@ -84,6 +104,8 @@ void pinetime_boot_init(void) {
         //  Restart for MCUBoot to rollback the firmware.
         hal_system_reset();
         return;
+    } else {
+      console_printf("MCUBoot processing...\n");  console_flush();
     }
 }
 
